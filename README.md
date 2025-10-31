@@ -1,1 +1,1 @@
-# Actividad-6-DESPLIEGUE-An-lisis-Extracci-n-de-Caracter-sticas-
+# Actividad-6-DESPLIEGUE
