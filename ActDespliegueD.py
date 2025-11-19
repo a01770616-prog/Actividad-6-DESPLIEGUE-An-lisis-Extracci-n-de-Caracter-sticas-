@@ -12,9 +12,15 @@ from sklearn.linear_model import LinearRegression
 import numpy as np
 import statsmodels.api as sm
 import statsmodels.api as sm
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from sklearn.preprocessing import StandardScaler
+from scipy.optimize import curve_fit
 import streamlit as st
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+import plotly.graph_objects as go
+
 #PALETA / PLOTLY
 
 PALETTE = {
@@ -136,7 +142,7 @@ main .block-container section h2, main .block-container section h3{{ color:{AIRB
 
 #LOGO
 HERE = Path(__file__).resolve().parent
-LOGO_STEM = "airbnbllogo"  #Nombre imagen 
+LOGO_STEM = "airbnb-logo"  #Nombre imagen 
 LOGO_PATH = None
 for ext in (".png", ".jpg", ".jpeg", ".webp", ".svg"):
     p = HERE / f"{LOGO_STEM}{ext}"
@@ -2444,6 +2450,8 @@ if View == "Regresión Lineal":
 
     # --- Columnas numéricas candidatas ---
     numeric_cols = df_combined.select_dtypes(include="number").columns.tolist()
+    # Excluir 'id' de las variables numéricas
+    numeric_cols = [c for c in numeric_cols if c.lower() != 'id']
     default_y = "price" if "price" in numeric_cols else (numeric_cols[0] if numeric_cols else None)
     default_x = "accommodates" if "accommodates" in numeric_cols else (
         "amenities_count" if "amenities_count" in numeric_cols else (
@@ -2469,6 +2477,15 @@ if View == "Regresión Lineal":
         0, max_predictors, min(2, max_predictors),
         help="Variables adicionales a la x principal"
     )
+
+    st.sidebar.header("Vista por ciudad (múltiple)")
+    ciudad_focus = st.sidebar.selectbox(
+        "Ciudad para el análisis detallado",
+        options=["Todas"] + selected_cities,
+        index=0,
+        help="Elige una ciudad para la gráfica de regresión múltiple y sus métricas."
+    )
+
     st.sidebar.markdown(f"**Total de variables independientes: {num_x + 1}** (1 principal + {num_x} adicionales)")
 
     x_multi_vars = []
@@ -2484,7 +2501,7 @@ if View == "Regresión Lineal":
         st.warning("No hay datos válidos después de limpiar NaN para las variables seleccionadas.")
         st.stop()
 
-    # --- Utilidad de unidades ---
+    # --- Unidades ---
     def get_unit(var_name):
         units = {
             'price': '€','accommodates':'huéspedes','bedrooms':'habitaciones','beds':'camas',
@@ -2503,11 +2520,10 @@ if View == "Regresión Lineal":
     st.subheader("Comparación visual")
     col_simple, col_multi = st.columns(2)
 
-    # ====== REGRESIÓN SIMPLE (una por ciudad o todas juntas) ======
+    # ====== REGRESIÓN SIMPLE ======
     with col_simple:
         st.markdown("**Regresión simple**")
 
-        # Helper para graficar una ciudad
         def _plot_reg_simple_ciudad(sub_df: pd.DataFrame, ciudad: str, x_var: str, y_var: str):
             Xc = sub_df[[x_var]].values
             yc = sub_df[y_var].values
@@ -2519,11 +2535,11 @@ if View == "Regresión Lineal":
             y_sorted = yhat_c[order]
             r2c = r2_score(yc, yhat_c)
 
-            figc, axc = plt.subplots(figsize=(6, 4))  # tamaño compacto para grid
+            figc, axc = plt.subplots(figsize=(6, 4))
             axc.scatter(sub_df[x_var], sub_df[y_var], alpha=0.6)
             axc.plot(x_sorted, y_sorted, color='red', linewidth=2.5, linestyle='-', zorder=5, label="Línea de regresión")
             axc.text(0.04, 0.96, f'R² = {r2c:.3f}', transform=axc.transAxes, fontsize=11, fontweight='bold',
-                    va='top', bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9, edgecolor='black', linewidth=1))
+                     va='top', bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9, edgecolor='black', linewidth=1))
             axc.set_title(f"{ciudad}: {y_var} vs {x_var}", fontsize=12)
             axc.set_xlabel(x_var); axc.set_ylabel(y_var)
             axc.legend(); axc.grid(True, alpha=0.3)
@@ -2548,11 +2564,15 @@ if View == "Regresión Lineal":
                 y_sorted = y_pred_simple[order]
                 r2_value = r2_score(y_simple, y_pred_simple)
 
+                # métricas globales de simple (para tarjetas)
+                rmse_simple = float(np.sqrt(mean_squared_error(y_simple, y_pred_simple)))
+                mae_simple  = float(mean_absolute_error(y_simple, y_pred_simple))
+
                 fig1, ax1 = plt.subplots(figsize=(10, 6))
                 sns.scatterplot(x=df_clean[x_var], y=df_clean[y_var], hue=df_clean["ciudad"], ax=ax1, alpha=0.6)
                 ax1.plot(x_sorted, y_sorted, color='red', label="Línea de regresión", linewidth=3, linestyle='-', zorder=5)
                 ax1.text(0.05, 0.95, f'R² = {r2_value:.4f}', transform=ax1.transAxes, fontsize=14, fontweight='bold',
-                        va='top', bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9, edgecolor='black', linewidth=2))
+                         va='top', bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.9, edgecolor='black', linewidth=2))
                 ax1.set_title(f"{y_var} vs {x_var}")
                 ax1.set_xlabel(x_var); ax1.set_ylabel(y_var)
                 ax1.legend(); ax1.grid(True, alpha=0.3)
@@ -2573,7 +2593,6 @@ if View == "Regresión Lineal":
 
         else:  # "Cuadrícula por ciudad"
             n_cols = st.slider("Columnas de la cuadrícula", 2, 4, min(3, max(2, len(selected_cities))))
-            # Creamos filas de 'n_cols' columnas y vamos llenando
             cols = st.columns(n_cols)
             for i, ciudad in enumerate(selected_cities):
                 sub = df_clean[df_clean["ciudad"] == ciudad][[x_var, y_var]].dropna()
@@ -2584,84 +2603,150 @@ if View == "Regresión Lineal":
                 with cols[i % n_cols]:
                     _plot_reg_simple_ciudad(sub, ciudad, x_var, y_var)
 
-    # ====== COMPARACIÓN PREDICCIÓN (MÚLTIPLE vs SIMPLE) ======
-    with col_multi:
-        st.markdown("**Predicción: múltiple vs simple**")
-        selected_predictors = [x_var] + x_multi_vars
-        df_multi = df_combined[[y_var] + selected_predictors].apply(pd.to_numeric, errors='coerce').dropna()
-
-        if df_multi.empty:
-            st.info("No hay suficientes datos válidos para la comparación múltiple.")
-        else:
-            X_multi = df_multi[selected_predictors].values
-            y_multi = df_multi[y_var].values
-
-            model_multi = LinearRegression()
-            model_simple_multi = LinearRegression()
-
+        # Cálculo silencioso de métricas simples globales (si no las generó el modo "Todas juntas")
+        if 'rmse_simple' not in locals() or 'mae_simple' not in locals():
             try:
-                model_multi.fit(X_multi, y_multi)
-                y_pred_multi = model_multi.predict(X_multi)
+                X_tmp = df_clean[[x_var]].values
+                y_tmp = df_clean[y_var].values
+                mtmp = LinearRegression().fit(X_tmp, y_tmp)
+                yhat_tmp = mtmp.predict(X_tmp)
+                rmse_simple = float(np.sqrt(mean_squared_error(y_tmp, yhat_tmp)))
+                mae_simple  = float(mean_absolute_error(y_tmp, yhat_tmp))
+            except Exception:
+                rmse_simple = None
+                mae_simple = None
+    # ====== REGRESIÓN MÚLTIPLE (sobre eje X; por ciudad) ======
+    with col_multi:
+        st.markdown("**Regresión múltiple — vista sobre eje X (por ciudad)**")
+        selected_predictors = [x_var] + x_multi_vars
 
-                X_simple_multi = df_multi[[x_var]].values
-                model_simple_multi.fit(X_simple_multi, y_multi)
-                y_pred_simple_multi = model_simple_multi.predict(X_simple_multi)
+        # Filtrado por ciudad para el análisis detallado
+        if ciudad_focus != "Todas":
+            df_scope = df_combined[df_combined["ciudad"] == ciudad_focus]
+            titulo_ciudad = f" — {ciudad_focus}"
+        else:
+            df_scope = df_combined
+            titulo_ciudad = " — (todas las ciudades)"
 
-                fig2, ax2 = plt.subplots()
-                ax2.scatter(y_multi, y_pred_simple_multi, alpha=0.6, label="Predicción simple")
-                ax2.scatter(y_multi, y_pred_multi, alpha=0.6, label="Predicción múltiple")
-                # (Eliminada la línea "Ideal")
-                # min_y, max_y = np.min(y_multi), np.max(y_multi)
-                # ax2.plot([min_y, max_y], [min_y, max_y], label="Ideal", linewidth=2)
+        df_multi = df_scope[[y_var] + selected_predictors].apply(pd.to_numeric, errors="coerce").dropna()
 
-                ax2.set_xlabel("Valor real")
-                ax2.set_ylabel("Predicción")
-                ax2.set_title("Predicción: múltiple vs simple")
-                ax2.legend()
-                st.pyplot(fig2)
+        if df_multi.empty or len(selected_predictors) < 1:
+            st.info("Selecciona al menos 1 variable independiente y verifica que haya datos válidos.")
+            # Inicializa KPIs para evitar N/A ruidoso
+            r2_multi = None
+            r2_adj_multi = None
+            rmse_multi = None
+            mae_multi = None
+            coef_multi = None
+            intercept_multi = None
+        else:
+            # Ajuste del modelo múltiple en el scope elegido
+            X = df_multi[selected_predictors].values
+            y = df_multi[y_var].values
+            model = LinearRegression().fit(X, y)
+            y_hat = model.predict(X)
 
-                # Métricas
-                rmse_simple = np.sqrt(np.mean((y_multi - y_pred_simple_multi) ** 2))
-                rmse_multi  = np.sqrt(np.mean((y_multi - y_pred_multi) ** 2))
-                mae_simple  = np.mean(np.abs(y_multi - y_pred_simple_multi))
-                mae_multi   = np.mean(np.abs(y_multi - y_pred_multi))
-                r2_multi    = r2_score(y_multi, y_pred_multi)
+            plot_df = df_multi.copy()
+            plot_df["y_real"] = y
+            plot_df["y_pred_multi"] = y_hat
 
-                n = len(y_multi)
-                k = len(selected_predictors)
-                r2_adj_multi = 1 - ((1 - r2_multi) * (n - 1) / (n - k - 1)) if n > k + 1 else r2_multi
+            # --- Controles de visual ---
+            alpha_scatter = st.slider(
+                "Transparencia de puntos (Y real)",
+                0.1, 1.0, 0.6, 0.1,
+                key="alpha_points_multi"
+            )
+            colorear_resid = st.checkbox(
+                "Colorear Y real por residuo (Ŷ − Y)",
+                value=True,
+                key="color_resid_multi"
+            )
 
-                r2_simple_multi = r2_score(y_multi, y_pred_simple_multi)
-                k_simple = 1
-                r2_adj_simple = 1 - ((1 - r2_simple_multi) * (n - 1) / (n - k_simple - 1)) if n > k_simple + 1 else r2_simple_multi
+            # === Gráfica principal: SOLO puntos de Y real y Ŷ (predicho) ===
+            fig, ax = plt.subplots(figsize=(10, 6))
 
-                coef_multi = model_multi.coef_
-                intercept_multi = model_multi.intercept_
+            if colorear_resid:
+                resid = plot_df["y_pred_multi"] - plot_df["y_real"]
+                sc = ax.scatter(
+                    plot_df[x_var], plot_df["y_real"],
+                    c=resid, s=26, alpha=alpha_scatter,
+                    marker="o", label="Y real"
+                )
+                cbar = plt.colorbar(sc, ax=ax)
+                cbar.set_label("Residuo (Ŷ − Y)")
+            else:
+                ax.scatter(
+                    plot_df[x_var], plot_df["y_real"],
+                    s=26, alpha=alpha_scatter,
+                    marker="o", label="Y real"
+                )
 
-                # Betas estandarizados (opcional, útil para comparar impacto)
-                scaler_X = StandardScaler()
-                scaler_y = StandardScaler()
-                X_multi_scaled = scaler_X.fit_transform(X_multi)
-                y_multi_scaled = scaler_y.fit_transform(y_multi.reshape(-1, 1)).ravel()
-                model_scaled = LinearRegression().fit(X_multi_scaled, y_multi_scaled)
-                coef_standardized = model_scaled.coef_
+            # Puntos de predicción múltiple (Ŷ)
+            ax.scatter(
+                plot_df[x_var], plot_df["y_pred_multi"],
+                s=30, alpha=0.9,
+                marker="^", label="Ŷ (múltiple)"
+            )
 
-            except Exception as e:
-                st.error("No se pudo ajustar/mostrar la comparación múltiple.")
-                st.exception(e)
-                rmse_simple = rmse_multi = mae_simple = mae_multi = None
-                r2_multi = r2_adj_multi = r2_adj_simple = None
-                coef_multi = intercept_multi = coef_standardized = None
+            ax.set_xlabel(x_var)
+            ax.set_ylabel(y_var)
+            ax.set_title(f"{y_var} sobre {x_var}{titulo_ciudad}: puntos de Y real y Ŷ")
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=9)
+            st.pyplot(fig)
+
+            # Métricas del modelo en el scope (ciudad/todas) y export a KPIs
+            r2 = r2_score(y, y_hat)
+            rmse = float(np.sqrt(mean_squared_error(y, y_hat)))
+            mae = float(mean_absolute_error(y, y_hat))
+            n = len(y)
+            k = len(selected_predictors)
+            r2_adj = 1 - ((1 - r2) * (n - 1) / (n - k - 1)) if n > k + 1 else r2
+
+            r2_multi = r2
+            r2_adj_multi = r2_adj
+            rmse_multi = rmse
+            mae_multi = mae
+            coef_multi = np.array([model.coef_[i] for i in range(len(selected_predictors))])
+            intercept_multi = float(model.intercept_)
+
+            st.markdown(
+                f"- **R²**: {r2:.4f} · **R² ajustado**: {r2_adj:.4f} · "
+                f"**RMSE**: {rmse:.3f} · **MAE**: {mae:.3f}"
+            )
+
+            # (Opcional) Tabla de coeficientes
+            mostrar_coefs = st.checkbox(
+                "Mostrar tabla de coeficientes del modelo",
+                value=False,
+                key="show_coefs_multi"
+            )
+            if mostrar_coefs:
+                coefs = dict(zip(selected_predictors, model.coef_))
+                coefs_df = pd.DataFrame({
+                    "variable": selected_predictors,
+                    "beta": [coefs[v] for v in selected_predictors]
+                })
+                # Betas estandarizados rápidos (z-score)
+                try:
+                    from sklearn.preprocessing import StandardScaler
+                    Xs = StandardScaler().fit_transform(df_multi[selected_predictors])
+                    ys = StandardScaler().fit_transform(df_multi[[y_var]]).ravel()
+                    model_std = LinearRegression().fit(Xs, ys)
+                    coefs_df["beta_estandarizado"] = model_std.coef_
+                except Exception:
+                    coefs_df["beta_estandarizado"] = np.nan
+                st.dataframe(coefs_df.round(4), use_container_width=True)
 
     # ===================== UTILIDADES DE UI =====================
     st.markdown("""
     <style>
     .card{background:#F7F7F7;border:1px solid rgba(0,0,0,.08);border-radius:16px;
-          padding:14px 16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.05);}
+        padding:14px 16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.05);}
     .card h4{margin:0 0 8px 0;font-weight:800;color:#FF385C;}
     .kpi{display:flex;gap:14px;flex-wrap:wrap}
     .kpi .metric{background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
-                 padding:10px 12px;min-width:160px}
+                padding:10px 12px;min-width:160px}
     .kpi .metric .label{font-size:12px;color:#666}
     .kpi .metric .value{font-size:20px;font-weight:700;color:#666}
     </style>
@@ -2733,11 +2818,11 @@ if View == "Regresión Lineal":
         unsafe_allow_html=True
     )
 
-    # Métricas de modelos
+    # Métricas de modelos (usan las variables calculadas arriba)
     rmse_simple_txt = f"{rmse_simple:.4f}" if 'rmse_simple' in locals() and rmse_simple is not None else "N/A"
-    rmse_multi_txt  = f"{rmse_multi:.4f}"  if 'rmse_multi' in locals() and rmse_multi  is not None else "N/A"
-    mae_simple_txt  = f"{mae_simple:.4f}"  if 'mae_simple' in locals() and mae_simple  is not None else "N/A"
-    mae_multi_txt   = f"{mae_multi:.4f}"   if 'mae_multi' in locals()  and mae_multi   is not None else "N/A"
+    rmse_multi_txt  = f"{rmse_multi:.4f}"  if 'rmse_multi' in locals()  and rmse_multi  is not None else "N/A"
+    mae_simple_txt  = f"{mae_simple:.4f}"  if 'mae_simple' in locals()  and mae_simple  is not None else "N/A"
+    mae_multi_txt   = f"{mae_multi:.4f}"   if 'mae_multi' in locals()   and mae_multi   is not None else "N/A"
     r2_multi_txt    = f"{r2_multi:.4f}"    if 'r2_multi' in locals()    and r2_multi    is not None else "N/A"
     r2_adj_multi_txt= f"{r2_adj_multi:.4f}"if 'r2_adj_multi' in locals()and r2_adj_multi is not None else "N/A"
 
@@ -2795,6 +2880,7 @@ if View == "Regresión Lineal":
     # =================== RESULTADOS POR CIUDAD (CARDS) ===================
     st.subheader("Resultados por ciudad")
     cols_cards = st.columns(3)
+
     for i, ciudad in enumerate(selected_cities):
         res = calcular_resultados(df_combined[df_combined["ciudad"] == ciudad], x_var, y_var)
         r2_txt = f"{res['r2']:.4f}"
@@ -2818,33 +2904,6 @@ if View == "Regresión Lineal":
                 unsafe_allow_html=True
             )
 
-    # ======= TABLA DE REGRESIÓN LINEAL SIMPLE POR CIUDAD =======
-    rows_tabla = []
-    for ciudad in selected_cities:
-        sub = df_combined[df_combined["ciudad"] == ciudad][[x_var, y_var]].dropna()
-        if len(sub) >= 2 and sub[x_var].nunique() > 1:
-            X = sm.add_constant(sub[x_var].values)
-            y = sub[y_var].values
-            try:
-                m = sm.OLS(y, X).fit()
-                rows_tabla.append({
-                    "ciudad": ciudad,
-                    "n": int(m.nobs),
-                    "beta0": float(m.params[0]),
-                    "beta1": float(m.params[1]),
-                    "R2": float(m.rsquared),
-                    "correlacion": float(sub[x_var].corr(sub[y_var]))
-                })
-            except Exception:
-                rows_tabla.append({"ciudad": ciudad, "n": len(sub), "beta0": np.nan, "beta1": np.nan, "R2": np.nan, "correlacion": np.nan})
-        else:
-            rows_tabla.append({"ciudad": ciudad, "n": len(sub), "beta0": np.nan, "beta1": np.nan, "R2": np.nan, "correlacion": np.nan})
-
-    df_tabla_ciudades = pd.DataFrame(rows_tabla)
-    if not df_tabla_ciudades.empty:
-        st.markdown("### Tabla de regresión simple por ciudad")
-        st.dataframe(df_tabla_ciudades.round(4), use_container_width=True)
-
     # =================== CONTEXTO DE DATOS ===================
     st.subheader("Contexto de los Datos")
     y_mean, y_min, y_max = df_clean[y_var].mean(), df_clean[y_var].min(), df_clean[y_var].max()
@@ -2857,11 +2916,11 @@ if View == "Regresión Lineal":
     st.markdown("""
     <style>
     .context-card{background:#FFF;border:2px solid #FF385C;border-radius:16px;
-          padding:16px 20px;margin-bottom:20px;box-shadow:0 2px 8px rgba(255,56,92,.15);}
+        padding:16px 20px;margin-bottom:20px;box-shadow:0 2px 8px rgba(255,56,92,.15);}
     .context-card h4{margin:0 0 12px 0;font-weight:800;color:#FF385C;font-size:18px;}
     .context-kpi{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;}
     .context-metric{background:#F7F7F7;border:1px solid rgba(0,0,0,.08);border-radius:10px;
-                 padding:12px 14px;min-width:140px;flex:1;}
+                padding:12px 14px;min-width:140px;flex:1;}
     .context-metric .label{font-size:11px;color:#666;text-transform:uppercase;font-weight:600;}
     .context-metric .value{font-size:18px;font-weight:700;color:#333;margin-top:4px;}
     .city-breakdown{background:#F7F7F7;border-radius:10px;padding:12px;margin-top:8px;}
@@ -2938,6 +2997,8 @@ if View == "Regresión Lineal":
     st.markdown("**Selecciona las variables a incluir en la matriz de correlación:**")
 
     all_numeric_cols = df_combined.select_dtypes(include='number').columns.tolist()
+    # Excluir 'id' de las variables numéricas
+    all_numeric_cols = [c for c in all_numeric_cols if c.lower() != 'id']
     default_vars = [v for v in ([y_var, x_var] + x_multi_vars) if v in all_numeric_cols]
 
     selected_heatmap_vars = st.multiselect(
@@ -3011,120 +3072,1404 @@ if View == "Regresión Lineal":
                     )
         st.markdown("---")
 
-# =========================================================
-# ====================== HALLAZGOS ========================
-# =========================================================
-st.header("Hallazgos")
-def _sr(x, d=2):
-    try: return f"{float(x):.{d}f}"
-    except: return "N/A"
+    # =========================================================
+    # ====================== HALLAZGOS ========================
+    # =========================================================
+    with st.expander("Hallazgos Importantes", expanded=False):
+        def _sr(x, d=2):
+            try: return f"{float(x):.{d}f}"
+            except: return "N/A"
 
-# 1) Fuente para simple por ciudad
-df_simple_view = None
-if 'df_tabla_ciudades' in locals() and isinstance(df_tabla_ciudades, pd.DataFrame):
-    # Normaliza nombres si vienen con símbolos
-    ren = {c:c for c in df_tabla_ciudades.columns}
-    ren.update({"β₀":"beta0","β₁":"beta1","Correlación":"corr"})
-    df_simple_view = df_tabla_ciudades.rename(columns=ren).copy()
-elif 'df_simple' in locals() and isinstance(df_simple, pd.DataFrame):
-    df_simple_view = df_simple.copy()
-else:
-    # Reconstrucción mínima con x_var / y_var
+        # 1) Fuente para simple por ciudad
+        df_simple_view = None
+        try:
+            rows = []
+            for ciudad in selected_cities:
+                sub = df_combined[df_combined["ciudad"] == ciudad][[x_var, y_var]].dropna()
+                if len(sub) >= 10 and sub[x_var].nunique() > 1:
+                    X = sm.add_constant(sub[x_var].values); y = sub[y_var].values
+                    m = sm.OLS(y, X).fit()
+                    rows.append({"ciudad":ciudad,"n":int(m.nobs),"beta0":float(m.params[0]),
+                                "beta1":float(m.params[1]),"R2":float(m.rsquared),
+                                "pvalue_beta1":float(m.pvalues[1])})
+                else:
+                    rows.append({"ciudad":ciudad,"n":len(sub),"beta0":np.nan,"beta1":np.nan,"R2":np.nan,"pvalue_beta1":np.nan})
+            df_simple_view = pd.DataFrame(rows)
+        except Exception:
+            df_simple_view = pd.DataFrame(columns=["ciudad","n","beta0","beta1","R2","pvalue_beta1"])
+
+        phrases = []
+
+        # Análisis del modelo lineal
+        phrases.append("**Modelo de Regresión Lineal Simple**: Captura relaciones lineales directas entre variables. La relación asume que por cada unidad de incremento en la variable independiente, la variable dependiente cambia en una cantidad constante.")
+        
+        # 2) Frases basadas en regresión simple (y_var ~ x_var)
+        if isinstance(df_simple_view, pd.DataFrame) and len(df_simple_view):
+            dfv = df_simple_view.copy()
+            for c in ["R2","beta1","pvalue_beta1","n"]:
+                if c in dfv.columns: dfv[c] = pd.to_numeric(dfv[c], errors="coerce")
+            dfv = dfv.dropna(subset=["R2"], how="all")
+
+            # % de ciudades con pendiente significativa
+            if {"pvalue_beta1","R2"}.issubset(dfv.columns):
+                mask_valid = dfv["R2"].notna()
+                total_valid = int(mask_valid.sum())
+                sig = int((dfv["pvalue_beta1"] < 0.05).fillna(False).sum())
+                if total_valid > 0:
+                    pct = 100*sig/total_valid
+                    phrases.append(f"**Significancia estadística**: En {_sr(pct,1)}% de las ciudades analizadas, la pendiente es estadísticamente significativa (p < 0.05) para la relación {x_var} vs {y_var}. Esto indica que la relación observada probablemente no se debe al azar.")
+
+            # Top 1 mejor y peor R²
+            if "R2" in dfv.columns and "ciudad" in dfv.columns:
+                top = dfv.dropna(subset=["R2"]).sort_values("R2", ascending=False)
+                if len(top):
+                    mejor_ciudad = top.iloc[0]['ciudad']
+                    mejor_r2 = top.iloc[0]['R2']
+                    phrases.append(f"**Mejor ajuste**: {mejor_ciudad} (R² = {_sr(mejor_r2,3)}) - El modelo explica {mejor_r2*100:.1f}% de la variabilidad en {y_var}.")
+                    
+                    if mejor_r2 >= 0.7:
+                        phrases.append(f"En {mejor_ciudad}, existe una relación lineal fuerte entre {x_var} y {y_var}, lo que sugiere que esta variable es un buen predictor.")
+                    elif mejor_r2 >= 0.4:
+                        phrases.append(f"En {mejor_ciudad}, existe una relación lineal moderada. Otros factores también contribuyen significativamente a la variación de precios.")
+                    else:
+                        phrases.append(f"En {mejor_ciudad}, la relación lineal es débil. Se recomienda considerar transformaciones no lineales o variables adicionales.")
+                
+                worst = top[top["R2"]>=0].sort_values("R2", ascending=True)
+                if len(worst):
+                    peor_ciudad = worst.iloc[0]['ciudad']
+                    peor_r2 = worst.iloc[0]['R2']
+                    phrases.append(f"**Menor ajuste**: {peor_ciudad} (R² = {_sr(peor_r2,3)}) - El modelo lineal simple explica solo {peor_r2*100:.1f}% de la variabilidad.")
+                    
+                    if peor_r2 < 0.3:
+                        phrases.append(f"En {peor_ciudad}, {x_var} tiene capacidad predictiva limitada sobre {y_var} en un modelo lineal. El mercado de Airbnb puede tener dinámicas más complejas o responder a otros factores.")
+
+            # Sentido de la relación (positiva/negativa) entre ciudades significativas
+            if {"beta1","pvalue_beta1","ciudad"}.issubset(dfv.columns):
+                pos_sig = dfv[(dfv["beta1"]>0) & (dfv["pvalue_beta1"]<0.05)]["ciudad"].tolist()
+                neg_sig = dfv[(dfv["beta1"]<0) & (dfv["pvalue_beta1"]<0.05)]["ciudad"].tolist()
+                if len(pos_sig):
+                    ciudades_pos = ', '.join(pos_sig[:5])
+                    if len(pos_sig) > 5:
+                        ciudades_pos += "..."
+                    phrases.append(f"**Relación positiva significativa**: En {ciudades_pos}, un aumento en {x_var} se asocia con un incremento en {y_var}.")
+                if len(neg_sig):
+                    ciudades_neg = ', '.join(neg_sig[:5])
+                    if len(neg_sig) > 5:
+                        ciudades_neg += "..."
+                    phrases.append(f"**Relación negativa significativa**: En {ciudades_neg}, un aumento en {x_var} se asocia con una disminución en {y_var}.")
+
+            # Efecto típico (mediana de β1) y potencia explicativa típica (mediana R²)
+            if {"beta1","R2"}.issubset(dfv.columns):
+                med_b1 = dfv["beta1"].dropna().median() if "beta1" in dfv else np.nan
+                med_r2 = dfv["R2"].dropna().median()
+                if pd.notna(med_b1):
+                    direccion = "incremento" if med_b1>=0 else "disminución"
+                    phrases.append(f"**Efecto típico**: La mediana de la pendiente es {_sr(abs(med_b1),2)}, lo que implica que típicamente un {direccion} de 1 unidad en {x_var} resulta en un cambio de {_sr(abs(med_b1),2)} unidades en {y_var}.")
+                if pd.notna(med_r2):
+                    phrases.append(f"**Capacidad explicativa típica**: La mediana de R² es {_sr(med_r2,3)} ({med_r2*100:.1f}%), indicando la proporción promedio de variabilidad explicada por el modelo lineal simple.")
+
+            # Análisis de consistencia
+            if "R2" in dfv.columns:
+                r2_std = dfv["R2"].std()
+                if r2_std < 0.1:
+                    phrases.append(f"**Consistencia alta**: El modelo lineal tiene un desempeño similar en todas las ciudades (desviación estándar de R² = {_sr(r2_std,3)}), sugiriendo que la relación lineal es relativamente uniforme.")
+                elif r2_std < 0.2:
+                    phrases.append(f"**Consistencia moderada**: Existe variación moderada en el ajuste entre ciudades (desviación estándar de R² = {_sr(r2_std,3)}).")
+                else:
+                    phrases.append(f"**Consistencia baja**: El ajuste varía considerablemente entre ciudades (desviación estándar de R² = {_sr(r2_std,3)}), indicando que cada mercado tiene características particulares.")
+
+        # 3) Frases del modelo múltiple global (si existe)
+        try:
+            # Intenta acceder a multi_metrics si existe en el contexto
+            multi_metrics_data = st.session_state.get("multi_metrics", None)
+            multi_coefs_data = st.session_state.get("multi_coefs", None)
+            
+            if multi_metrics_data and isinstance(multi_metrics_data, dict) and len(multi_metrics_data) > 0:
+                phrases.append("")
+                phrases.append("**Análisis de Regresión Múltiple**:")
+                r2a = multi_metrics_data.get("R2_adj", None)
+                rmse = multi_metrics_data.get("RMSE", None)
+                if r2a is not None:
+                    phrases.append(f"El modelo múltiple alcanza un R² ajustado de {_sr(r2a,3)} ({r2a*100:.1f}%). El R² ajustado penaliza la inclusión de variables adicionales, proporcionando una medida más conservadora del ajuste.")
+                if rmse is not None:
+                    phrases.append(f"El error cuadrático medio (RMSE) del modelo es {_sr(rmse,2)} unidades de {y_var}, representando el error típico en las predicciones.")
+
+            if multi_coefs_data is not None and isinstance(multi_coefs_data, pd.DataFrame) and len(multi_coefs_data) > 0:
+                dfc = multi_coefs_data.copy()
+                if "variable" in dfc.columns and "beta_estandarizado" in dfc.columns:
+                    dfc = dfc[dfc["variable"]!="const"].dropna(subset=["beta_estandarizado"])
+                    if len(dfc):
+                        dfc["absb"] = dfc["beta_estandarizado"].abs()
+                        top3 = dfc.sort_values("absb", ascending=False).head(3)
+                        driv = []
+                        for _, row in top3.iterrows():
+                            var_info = f"{row['variable']} (β estandarizado = {_sr(row['beta_estandarizado'],2)}"
+                            if "pvalue" in dfc.columns:
+                                var_info += f", p = {_sr(row['pvalue'],3)}"
+                            var_info += ")"
+                            driv.append(var_info)
+                        phrases.append(f"**Principales predictores**: {', '.join(driv)}. Los coeficientes estandarizados permiten comparar la importancia relativa de cada variable independientemente de sus unidades de medida.")
+        except Exception:
+            # Si no hay datos de regresión múltiple, continuar sin ellos
+            pass
+
+        # Interpretación contextual
+        phrases.append("")
+        phrases.append("**Interpretación en el contexto de Airbnb**:")
+        if x_var == "accommodates":
+            phrases.append("La capacidad de huéspedes muestra relación lineal con el precio. Propiedades con mayor capacidad tienden a tener precios más altos de manera proporcional.")
+        elif x_var == "amenities_count":
+            phrases.append("El número de amenidades se relaciona linealmente con el precio. Cada amenidad adicional contribuye de manera constante al valor percibido de la propiedad.")
+        elif x_var == "number_of_reviews":
+            phrases.append("El número de reseñas tiene relación lineal con los precios, posiblemente reflejando popularidad o confiabilidad de la propiedad.")
+        
+        # Mostrar todos los hallazgos
+        for phrase in phrases:
+            if phrase:
+                st.markdown(phrase)
+
+# ====== HELPERS REGRESIÓN NO LINEAL ======
+
+def modelo_polinomial(x, y, grado=2):
+    X = np.vander(x, N=grado+1, increasing=True)  # [1, x, x^2, ...]
+    reg = LinearRegression().fit(X, y)
+    def f_pred(x_new):
+        X_new = np.vander(x_new, N=grado+1, increasing=True)
+        return reg.predict(X_new)
+    return reg, f_pred
+
+def modelo_logaritmico(x, y):
+    # y = b0 + b1 ln(x)
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    mask = x > 0
+    x_log = np.log(x[mask])
+    y_mask = y[mask]
+    reg = LinearRegression().fit(x_log.reshape(-1,1), y_mask)
+    def f_pred(x_new):
+        x_new = np.array(x_new, dtype=float)
+        x_new_log = np.log(x_new)
+        return reg.predict(x_new_log.reshape(-1,1))
+    return reg, f_pred, mask
+
+def modelo_exponencial(x, y):
+    # y = a * e^(b x)  -> ln(y) = ln(a) + b x
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    mask = y > 0
+    x_mask = x[mask]
+    y_log = np.log(y[mask])
+    reg = LinearRegression().fit(x_mask.reshape(-1,1), y_log)
+    def f_pred(x_new):
+        x_new = np.array(x_new, dtype=float)
+        y_log_pred = reg.predict(x_new.reshape(-1,1))
+        return np.exp(y_log_pred)
+    return reg, f_pred, mask
+
+def modelo_potencia(x, y):
+    # y = a * x^b  -> ln(y) = ln(a) + b ln(x)
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    mask = (x > 0) & (y > 0)
+    x_log = np.log(x[mask])
+    y_log = np.log(y[mask])
+    reg = LinearRegression().fit(x_log.reshape(-1,1), y_log)
+    def f_pred(x_new):
+        x_new = np.array(x_new, dtype=float)
+        x_log_new = np.log(x_new)
+        y_log_pred = reg.predict(x_log_new.reshape(-1,1))
+        return np.exp(y_log_pred)
+    return reg, f_pred, mask
+
+def modelo_raiz(x, y):
+    # y = b0 + b1 sqrt(x)
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    mask = x >= 0
+    x_sqrt = np.sqrt(x[mask])
+    y_mask = y[mask]
+    reg = LinearRegression().fit(x_sqrt.reshape(-1,1), y_mask)
+    def f_pred(x_new):
+        x_new = np.array(x_new, dtype=float)
+        x_sqrt_new = np.sqrt(x_new)
+        return reg.predict(x_sqrt_new.reshape(-1,1))
+    return reg, f_pred, mask
+
+def modelo_exponencial_decreciente(x, y):
+    # y = a * exp(-b*x) + c  ->  Ajuste no lineal con curve_fit
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    
+    def func(x, a, b, c):
+        return a * np.exp(-b * x) + c
+    
     try:
-        import statsmodels.api as sm
-        rows = []
-        for ciudad in selected_cities:
-            sub = df_combined[df_combined["ciudad"] == ciudad][[x_var, y_var]].dropna()
-            if len(sub) >= 10 and sub[x_var].nunique() > 1:
-                X = sm.add_constant(sub[x_var].values); y = sub[y_var].values
-                m = sm.OLS(y, X).fit()
-                rows.append({"ciudad":ciudad,"n":int(m.nobs),"beta0":float(m.params[0]),
-                             "beta1":float(m.params[1]),"R2":float(m.rsquared),
-                             "pvalue_beta1":float(m.pvalues[1])})
+        # Valores iniciales razonables
+        p0 = [y.max() - y.min(), 0.01, y.min()]
+        popt, _ = curve_fit(func, x, y, p0=p0, maxfev=10000)
+        def f_pred(x_new):
+            return func(x_new, *popt)
+        return None, f_pred, np.ones(len(x), dtype=bool)
+    except Exception as e:
+        # Si falla, intentar con ajuste lineal simple
+        return None, None, np.ones(len(x), dtype=bool)
+
+def modelo_inverso(x, y):
+    # y = 1/(a*x)  ->  y = b0 * (1/x)
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    mask = x != 0
+    x_inv = 1.0 / x[mask]
+    y_mask = y[mask]
+    reg = LinearRegression().fit(x_inv.reshape(-1,1), y_mask)
+    def f_pred(x_new):
+        x_new = np.array(x_new, dtype=float)
+        x_inv_new = 1.0 / x_new
+        return reg.predict(x_inv_new.reshape(-1,1))
+    return reg, f_pred, mask
+
+def modelo_senoidal(x, y):
+    # y = a*sin(b*x) + c  ->  Ajuste no lineal
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    
+    def func(x, a, b, c):
+        return a * np.sin(b * x) + c
+    
+    try:
+        # Valores iniciales razonables
+        a0 = (y.max() - y.min()) / 2
+        b0 = 2 * np.pi / (x.max() - x.min()) if x.max() != x.min() else 1
+        c0 = y.mean()
+        p0 = [a0, b0, c0]
+        
+        popt, _ = curve_fit(func, x, y, p0=p0, maxfev=10000)
+        def f_pred(x_new):
+            return func(x_new, *popt)
+        return None, f_pred, np.ones(len(x), dtype=bool)
+    except Exception as e:
+        return None, None, np.ones(len(x), dtype=bool)
+
+def modelo_tangencial(x, y):
+    # y = a*tan(x) + b  ->  Ajuste no lineal
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    
+    def func(x, a, b):
+        return a * np.tan(x) + b
+    
+    try:
+        # Valores iniciales
+        p0 = [1.0, y.mean()]
+        popt, _ = curve_fit(func, x, y, p0=p0, maxfev=10000)
+        def f_pred(x_new):
+            return func(x_new, *popt)
+        return None, f_pred, np.ones(len(x), dtype=bool)
+    except Exception as e:
+        return None, None, np.ones(len(x), dtype=bool)
+
+def modelo_valor_absoluto(x, y):
+    # y = a*|x| + b*x + c  ->  Ajuste no lineal
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    
+    def func(x, a, b, c):
+        return a * np.abs(x) + b * x + c
+    
+    try:
+        # Valores iniciales
+        p0 = [1.0, 0.0, y.mean()]
+        popt, _ = curve_fit(func, x, y, p0=p0, maxfev=10000)
+        def f_pred(x_new):
+            return func(x_new, *popt)
+        return None, f_pred, np.ones(len(x), dtype=bool)
+    except Exception as e:
+        return None, None, np.ones(len(x), dtype=bool)
+
+def modelo_cociente_polinomial(x, y):
+    # y = (a*x^2 + b) / (c*x^2)  ->  Ajuste no lineal
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    mask = x != 0
+    x_mask = x[mask]
+    y_mask = y[mask]
+    
+    def func(x, a, b, c):
+        return (a * x**2 + b) / (c * x**2)
+    
+    try:
+        # Valores iniciales
+        p0 = [1.0, y_mask.mean(), 1.0]
+        popt, _ = curve_fit(func, x_mask, y_mask, p0=p0, maxfev=10000)
+        def f_pred(x_new):
+            return func(x_new, *popt)
+        return None, f_pred, mask
+    except Exception as e:
+        return None, None, mask
+
+def modelo_cuadratico_inverso(x, y):
+    # y = 1/(a*x^2)  ->  y = b0 * (1/x^2)
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    mask = x != 0
+    x_inv2 = 1.0 / (x[mask]**2)
+    y_mask = y[mask]
+    reg = LinearRegression().fit(x_inv2.reshape(-1,1), y_mask)
+    def f_pred(x_new):
+        x_new = np.array(x_new, dtype=float)
+        x_inv2_new = 1.0 / (x_new**2)
+        return reg.predict(x_inv2_new.reshape(-1,1))
+    return reg, f_pred, mask
+
+def modelo_polinomial_inverso(x, y):
+    # y = (a/b)*x^2 + c*x  ->  Simplificado: y = a*x^2 + b*x
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    X = np.column_stack([x**2, x])
+    reg = LinearRegression().fit(X, y)
+    def f_pred(x_new):
+        x_new = np.array(x_new, dtype=float)
+        X_new = np.column_stack([x_new**2, x_new])
+        return reg.predict(X_new)
+    return reg, f_pred, np.ones(len(x), dtype=bool)
+
+# ====== VISTA: REGRESIÓN NO LINEAL ======
+# ====== VISTA: REGRESIÓN NO LINEAL ======
+if View == "Regresión No Lineal":
+
+    st.title("Airbnb – Regresión No Lineal por ciudad")
+
+    # --- Validación de columna ciudad ---
+    if "ciudad" not in df.columns or df["ciudad"].dropna().empty:
+        st.warning("No hay columna 'ciudad' válida en el DataFrame.")
+        st.stop()
+
+    # --- Selección de ciudades ---
+    ciudades_disp = sorted(df["ciudad"].dropna().unique().tolist())
+    st.sidebar.header("Ciudades")
+    selected_cities = st.sidebar.multiselect(
+        "Selecciona de 1 a 5 ciudades",
+        options=ciudades_disp,
+        default=ciudades_disp[:min(3, len(ciudades_disp))],
+        max_selections=5
+    )
+
+    if not selected_cities:
+        st.info("Selecciona al menos una ciudad para continuar.")
+        st.stop()
+
+    df_combined = df[df["ciudad"].isin(selected_cities)].copy()
+
+    # --- Columnas numéricas candidatas ---
+    numeric_cols = df_combined.select_dtypes(include="number").columns.tolist()
+    # Excluir 'id' de las variables numéricas
+    numeric_cols = [c for c in numeric_cols if c.lower() != 'id']
+    if len(numeric_cols) < 2:
+        st.warning("Se requieren al menos dos columnas numéricas para hacer regresión.")
+        st.stop()
+
+    # Defaults razonables
+    default_y = "precio" if "precio" in numeric_cols else numeric_cols[0]
+    default_x = "num_huespedes" if "num_huespedes" in numeric_cols else numeric_cols[min(1, len(numeric_cols) - 1)]
+
+    st.sidebar.header("Variables de regresión no lineal")
+    x_var = st.sidebar.selectbox("Variable independiente (X)", numeric_cols, index=numeric_cols.index(default_x))
+    restantes_para_y = [c for c in numeric_cols if c != x_var]
+    y_idx = restantes_para_y.index(default_y) if default_y in restantes_para_y else 0
+    y_var = st.sidebar.selectbox("Variable dependiente (Y)", restantes_para_y, index=y_idx)
+
+    # --- Modelos disponibles (al menos 5) ---
+    modelos_disponibles = {
+        "Polinomial grado 2": "poly2",
+        "Polinomial grado 3": "poly3",
+        "Logarítmico (Y ~ ln X)": "log",
+        "Exponencial (Y ~ exp(X))": "exp",
+        "Potencia (Y ~ X^b)": "pow",
+        "Raíz cuadrada (Y ~ sqrt(X))": "sqrt",
+        "Inversa (Y ~ 1/X)": "inversa",
+        "Cociente de polinomios": "cociente_poli",
+        "Senoidal (Y ~ sin(X))": "senoidal",
+    }
+
+    # 👉 Solo UNA ecuación seleccionada
+    nombre_modelo = st.sidebar.selectbox(
+        "Ecuación no lineal",
+        options=list(modelos_disponibles.keys()),
+        index=0
+    )
+    tipo_modelo = modelos_disponibles[nombre_modelo]
+
+    # Función helper para plotear una ciudad individual
+    def _plot_nonlinear_ciudad(df_c, ciudad, x_var, y_var, tipo_modelo, nombre_modelo, mostrar_metricas=True):
+        """Plotea regresión no lineal para una ciudad específica"""
+        if df_c.empty:
+            st.info(f"{ciudad}: Sin datos.")
+            return None
+
+        x = df_c[x_var].values.astype(float)
+        y = df_c[y_var].values.astype(float)
+        n = len(y)
+
+        x_grid = np.linspace(x.min(), x.max(), 200)
+
+        try:
+            # Ajuste del modelo elegido
+            if tipo_modelo == "poly2":
+                reg, f_pred = modelo_polinomial(x, y, grado=2)
+                y_pred = f_pred(x)
+                x_plot = x_grid
+                y_grid = f_pred(x_plot)
+
+            elif tipo_modelo == "poly3":
+                reg, f_pred = modelo_polinomial(x, y, grado=3)
+                y_pred = f_pred(x)
+                x_plot = x_grid
+                y_grid = f_pred(x_plot)
+
+            elif tipo_modelo == "log":
+                reg, f_pred, mask = modelo_logaritmico(x, y)
+                y_pred = np.full_like(y, np.nan, dtype=float)
+                y_pred[mask] = f_pred(x[mask])
+                x_plot = x_grid[x_grid > 0]
+                y_grid = f_pred(x_plot)
+
+            elif tipo_modelo == "exp":
+                reg, f_pred, mask = modelo_exponencial(x, y)
+                y_pred = np.full_like(y, np.nan, dtype=float)
+                y_pred[mask] = f_pred(x[mask])
+                x_plot = x_grid
+                y_grid = f_pred(x_plot)
+
+            elif tipo_modelo == "pow":
+                reg, f_pred, mask = modelo_potencia(x, y)
+                y_pred = np.full_like(y, np.nan, dtype=float)
+                y_pred[mask] = f_pred(x[mask])
+                x_plot = x_grid[x_grid > 0]
+                y_grid = f_pred(x_plot)
+
+            elif tipo_modelo == "sqrt":
+                reg, f_pred, mask = modelo_raiz(x, y)
+                y_pred = np.full_like(y, np.nan, dtype=float)
+                y_pred[mask] = f_pred(x[mask])
+                x_plot = x_grid[x_grid >= 0]
+                y_grid = f_pred(x_plot)
+
+            elif tipo_modelo == "inversa":
+                reg, f_pred, mask = modelo_inverso(x, y)
+                y_pred = np.full_like(y, np.nan, dtype=float)
+                y_pred[mask] = f_pred(x[mask])
+                x_plot = x_grid[x_grid != 0]
+                y_grid = f_pred(x_plot)
+
+            elif tipo_modelo == "cociente_poli":
+                reg, f_pred, mask = modelo_cociente_polinomial(x, y)
+                if f_pred is None:
+                    st.info(f"{ciudad}: El modelo de cociente polinomial no convergió con estos datos.")
+                    return None
+                # Crear objeto dummy para reg si es None
+                if reg is None:
+                    class DummyReg:
+                        coef_ = np.array([])
+                        intercept_ = 0
+                    reg = DummyReg()
+                y_pred = np.full_like(y, np.nan, dtype=float)
+                y_pred[mask] = f_pred(x[mask])
+                x_plot = x_grid[x_grid != 0]
+                y_grid = f_pred(x_plot)
+
+            elif tipo_modelo == "senoidal":
+                reg, f_pred, mask = modelo_senoidal(x, y)
+                if f_pred is None:
+                    st.info(f"{ciudad}: El modelo senoidal no convergió con estos datos.")
+                    return None
+                # Crear objeto dummy para reg si es None
+                if reg is None:
+                    class DummyReg:
+                        coef_ = np.array([])
+                        intercept_ = 0
+                    reg = DummyReg()
+                y_pred = f_pred(x)
+                x_plot = x_grid
+                y_grid = f_pred(x_plot)
+
+            # Métricas
+            mask_valid = ~np.isnan(y_pred)
+            if mask_valid.sum() < 3:
+                st.info(f"{ciudad}: Datos insuficientes para calcular métricas.")
+                return None
+
+            r2 = r2_score(y[mask_valid], y_pred[mask_valid])
+            rmse = float(np.sqrt(mean_squared_error(y[mask_valid], y_pred[mask_valid])))
+            mae = float(mean_absolute_error(y[mask_valid], y_pred[mask_valid]))
+            
+            # MAPE (Mean Absolute Percentage Error)
+            mape = np.mean(np.abs((y[mask_valid] - y_pred[mask_valid]) / y[mask_valid])) * 100
+            mape = float(mape) if not np.isnan(mape) and not np.isinf(mape) else 0.0
+            
+            # Correlación de Pearson (r)
+            r_pearson = np.corrcoef(y[mask_valid], y_pred[mask_valid])[0, 1]
+            r_pearson = float(r_pearson) if not np.isnan(r_pearson) else 0.0
+            
+            # Determinar número de parámetros según el tipo de modelo
+            if tipo_modelo in ["cociente_poli"]:
+                p = 3  # 3 parámetros (a, b, c)
+            elif tipo_modelo in ["senoidal"]:
+                p = 3  # 3 parámetros (a, b, c)
+            elif hasattr(reg, "coef_"):
+                p = reg.coef_.size + 1
             else:
-                rows.append({"ciudad":ciudad,"n":len(sub),"beta0":np.nan,"beta1":np.nan,"R2":np.nan,"pvalue_beta1":np.nan})
-        df_simple_view = pd.DataFrame(rows)
-    except Exception:
-        df_simple_view = pd.DataFrame(columns=["ciudad","n","beta0","beta1","R2","pvalue_beta1"])
+                p = 2  # default
+            
+            r2_adj = 1 - (1 - r2) * (n - 1) / (n - p - 1) if n > p + 1 else np.nan
 
-phrases = []
+            # Extraer coeficientes para la ecuación
+            if tipo_modelo in ["poly2", "poly3"]:
+                coefs = reg.coef_ if hasattr(reg, "coef_") else []
+                intercept = reg.intercept_ if hasattr(reg, "intercept_") else 0
+                if tipo_modelo == "poly2":
+                    ecuacion = f"{y_var} = {coefs[2]:.4f}·{x_var}² + {coefs[1]:.4f}·{x_var} + {intercept:.4f}"
+                else:  # poly3
+                    ecuacion = f"{y_var} = {coefs[3]:.4f}·{x_var}³ + {coefs[2]:.4f}·{x_var}² + {coefs[1]:.4f}·{x_var} + {intercept:.4f}"
+            elif tipo_modelo == "log":
+                b0 = reg.intercept_ if hasattr(reg, "intercept_") else 0
+                b1 = reg.coef_[0] if hasattr(reg, "coef_") else 0
+                ecuacion = f"{y_var} = {b1:.4f}·ln({x_var}) + {b0:.4f}"
+            elif tipo_modelo == "exp":
+                b = reg.coef_[0] if hasattr(reg, "coef_") else 0
+                ln_a = reg.intercept_ if hasattr(reg, "intercept_") else 0
+                a = np.exp(ln_a)
+                ecuacion = f"{y_var} = {a:.4f}·e^({b:.4f}·{x_var})"
+            elif tipo_modelo == "pow":
+                b = reg.coef_[0] if hasattr(reg, "coef_") else 0
+                ln_a = reg.intercept_ if hasattr(reg, "intercept_") else 0
+                a = np.exp(ln_a)
+                ecuacion = f"{y_var} = {a:.4f}·{x_var}^{b:.4f}"
+            elif tipo_modelo == "sqrt":
+                b0 = reg.intercept_ if hasattr(reg, "intercept_") else 0
+                b1 = reg.coef_[0] if hasattr(reg, "coef_") else 0
+                ecuacion = f"{y_var} = {b1:.4f}·√{x_var} + {b0:.4f}"
+            elif tipo_modelo == "inversa":
+                # El modelo es y = a*(1/x), donde a es el coeficiente
+                a = reg.coef_[0] if hasattr(reg, "coef_") and len(reg.coef_) > 0 else 0
+                ecuacion = f"{y_var} = {a:.4f}·(1/{x_var})"
+            elif tipo_modelo == "cociente_poli":
+                ecuacion = f"{y_var} = (a·{x_var}² + b)/(c·{x_var}²) [ajuste no lineal]"
+            elif tipo_modelo == "senoidal":
+                ecuacion = f"{y_var} = a·sin(b·{x_var}) + c [ajuste no lineal]"
+            else:
+                ecuacion = "Ecuación no disponible"
 
-# 2) Frases basadas en regresión simple (y_var ~ x_var)
-if isinstance(df_simple_view, pd.DataFrame) and len(df_simple_view):
-    dfv = df_simple_view.copy()
-    # Limpieza mínima
-    for c in ["R2","beta1","pvalue_beta1","n"]:
-        if c in dfv.columns: dfv[c] = pd.to_numeric(dfv[c], errors="coerce")
-    dfv = dfv.dropna(subset=["R2"], how="all")
+            # Figura
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=x, y=y,
+                mode="markers",
+                name="Datos",
+                opacity=0.6
+            ))
+            fig.add_trace(go.Scatter(
+                x=x_plot, y=y_grid,
+                mode="lines",
+                name=nombre_modelo
+            ))
+            
+            # Agregar anotación con R² en la esquina superior derecha
+            fig.add_annotation(
+                text=f"R² = {r2:.4f}",
+                xref="paper", yref="paper",
+                x=0.98, y=0.98,
+                xanchor="right", yanchor="top",
+                showarrow=False,
+                font=dict(size=16, color="white", family="Arial Black"),
+                bgcolor="#FF385C",
+                bordercolor="#FF385C",
+                borderwidth=2,
+                borderpad=8,
+                opacity=0.95
+            )
+            
+            fig.update_layout(
+                title=f"{ciudad}: {y_var} vs {x_var}",
+                xaxis_title=x_var,
+                yaxis_title=y_var,
+                margin=dict(l=10, r=10, t=40, b=10),
+                showlegend=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-    # % de ciudades con pendiente significativa
-    if {"pvalue_beta1","R2"}.issubset(dfv.columns):
-        mask_valid = dfv["R2"].notna()
-        total_valid = int(mask_valid.sum())
-        sig = int((dfv["pvalue_beta1"] < 0.05).fillna(False).sum())
-        if total_valid > 0:
-            pct = 100*sig/total_valid
-            phrases.append(f"En {_sr(pct,1)}% de las ciudades la pendiente es significativa (p<0.05) para {x_var} → {y_var}.")
+            # Mostrar métricas en formato de tarjeta
+            if mostrar_metricas:
+                st.markdown(f"""
+                <div style="background:#F7F7F7;border:1px solid rgba(0,0,0,.08);border-radius:16px;
+                            padding:14px 16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.05);">
+                    <h4 style="margin:0 0 8px 0;font-weight:800;color:#FF385C;text-align:center;">Métricas del Modelo - {ciudad}</h4>
+                <div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center;">
+                    <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                padding:10px 12px;min-width:160px;">
+                        <div style="font-size:12px;color:#666;text-align:center;">r (Correlación)</div>
+                        <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{r_pearson:.3f}</div>
+                    </div>
+                    <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                padding:10px 12px;min-width:160px;">
+                        <div style="font-size:12px;color:#666;text-align:center;">R²</div>
+                        <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{r2:.3f}</div>
+                    </div>
+                    <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                padding:10px 12px;min-width:160px;">
+                        <div style="font-size:12px;color:#666;text-align:center;">R² Ajustado</div>
+                        <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{r2_adj:.3f}</div>
+                    </div>
+                    <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                padding:10px 12px;min-width:160px;">
+                        <div style="font-size:12px;color:#666;text-align:center;">RMSE</div>
+                        <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{rmse:.2f}</div>
+                    </div>
+                    <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                padding:10px 12px;min-width:160px;">
+                        <div style="font-size:12px;color:#666;text-align:center;">MAE</div>
+                        <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{mae:.2f}</div>
+                    </div>
+                    <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                padding:10px 12px;min-width:160px;">
+                        <div style="font-size:12px;color:#666;text-align:center;">MAPE</div>
+                        <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{mape:.2f}%</div>
+                    </div>
+                </div>
+                <div style="margin-top:12px;padding:10px;background:#fff;border:1px solid rgba(0,0,0,.06);
+                            border-radius:12px;font-size:16px;font-weight:600;text-align:center;color:#484848;">
+                        {ecuacion}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
-    # Top 1 mejor y peor R²
-    if "R2" in dfv.columns and "ciudad" in dfv.columns:
-        top = dfv.dropna(subset=["R2"]).sort_values("R2", ascending=False)
-        if len(top):
-            phrases.append(f"El mejor ajuste se observa en {top.iloc[0]['ciudad']} (R²={_sr(top.iloc[0]['R2'],3)}).")
-        worst = top[top["R2"]>=0].sort_values("R2", ascending=True)
-        if len(worst):
-            phrases.append(f"El ajuste más bajo se observa en {worst.iloc[0]['ciudad']} (R²={_sr(worst.iloc[0]['R2'],3)}).")
+            return {
+                "ciudad": ciudad,
+                "Modelo": nombre_modelo,
+                "r (Correlación)": r_pearson,
+                "R²": r2,
+                "R² ajustado": r2_adj,
+                "RMSE": rmse,
+                "MAE": mae,
+                "MAPE (%)": mape
+            }
 
-    # Sentido de la relación (positiva/negativa) entre ciudades significativas
-    if {"beta1","pvalue_beta1","ciudad"}.issubset(dfv.columns):
-        pos_sig = dfv[(dfv["beta1"]>0) & (dfv["pvalue_beta1"]<0.05)]["ciudad"].tolist()
-        neg_sig = dfv[(dfv["beta1"]<0) & (dfv["pvalue_beta1"]<0.05)]["ciudad"].tolist()
-        if len(pos_sig):
-            phrases.append(f"Relación positiva y significativa (↑{y_var} con ↑{x_var}) en: {', '.join(pos_sig[:5])}" + ("…" if len(pos_sig)>5 else "") + ".")
-        if len(neg_sig):
-            phrases.append(f"Relación negativa y significativa (↓{y_var} con ↑{x_var}) en: {', '.join(neg_sig[:5])}" + ("…" if len(neg_sig)>5 else "") + ".")
+        except Exception as e:
+            st.warning(f"Error en {ciudad}: {e}")
+            return None
+    
+    # Función auxiliar para ajustar todos los modelos
+    def ajustar_todos_modelos_tab3(df_ciudad_input, x_var_input, y_var_input):
+        """Ajusta los 9 modelos a los datos de una ciudad y retorna métricas"""
+        df_c = df_ciudad_input[[x_var_input, y_var_input]].dropna()
+        if df_c.empty or len(df_c) < 10:
+            return None
+        
+        x = df_c[x_var_input].values.astype(float)
+        y = df_c[y_var_input].values.astype(float)
+        n = len(y)
+        
+        resultados = {}
+        
+        for nombre, tipo in modelos_disponibles.items():
+            try:
+                # Ajustar modelo según tipo
+                if tipo == "poly2":
+                    reg, f_pred = modelo_polinomial(x, y, grado=2)
+                    y_pred = f_pred(x)
+                elif tipo == "poly3":
+                    reg, f_pred = modelo_polinomial(x, y, grado=3)
+                    y_pred = f_pred(x)
+                elif tipo == "log":
+                    reg, f_pred, mask = modelo_logaritmico(x, y)
+                    y_pred = np.full_like(y, np.nan, dtype=float)
+                    if mask.sum() > 0:
+                        y_pred[mask] = f_pred(x[mask])
+                elif tipo == "exp":
+                    reg, f_pred, mask = modelo_exponencial(x, y)
+                    y_pred = np.full_like(y, np.nan, dtype=float)
+                    if mask.sum() > 0:
+                        y_pred[mask] = f_pred(x[mask])
+                elif tipo == "pow":
+                    reg, f_pred, mask = modelo_potencia(x, y)
+                    y_pred = np.full_like(y, np.nan, dtype=float)
+                    if mask.sum() > 0:
+                        y_pred[mask] = f_pred(x[mask])
+                elif tipo == "sqrt":
+                    reg, f_pred, mask = modelo_raiz(x, y)
+                    y_pred = np.full_like(y, np.nan, dtype=float)
+                    if mask.sum() > 0:
+                        y_pred[mask] = f_pred(x[mask])
+                elif tipo == "inversa":
+                    reg, f_pred, mask = modelo_inverso(x, y)
+                    y_pred = np.full_like(y, np.nan, dtype=float)
+                    if mask.sum() > 0:
+                        y_pred[mask] = f_pred(x[mask])
+                elif tipo == "cociente_poli":
+                    reg, f_pred, mask = modelo_cociente_polinomial(x, y)
+                    if f_pred is None:
+                        continue
+                    y_pred = np.full_like(y, np.nan, dtype=float)
+                    if mask.sum() > 0:
+                        y_pred[mask] = f_pred(x[mask])
+                elif tipo == "senoidal":
+                    reg, f_pred, mask = modelo_senoidal(x, y)
+                    if f_pred is None:
+                        continue
+                    y_pred = np.full_like(y, np.nan, dtype=float)
+                    y_pred = f_pred(x)
+                
+                # Calcular métricas
+                mask_valid = ~np.isnan(y_pred)
+                if mask_valid.sum() < 3:
+                    continue
+                
+                r2 = r2_score(y[mask_valid], y_pred[mask_valid])
+                rmse = float(np.sqrt(mean_squared_error(y[mask_valid], y_pred[mask_valid])))
+                mae = float(mean_absolute_error(y[mask_valid], y_pred[mask_valid]))
+                mape = np.mean(np.abs((y[mask_valid] - y_pred[mask_valid]) / y[mask_valid])) * 100
+                mape = float(mape) if not np.isnan(mape) and not np.isinf(mape) else 0.0
+                
+                # Correlación de Pearson (r)
+                r_pearson = np.corrcoef(y[mask_valid], y_pred[mask_valid])[0, 1]
+                r_pearson = float(r_pearson) if not np.isnan(r_pearson) else 0.0
+                
+                # Determinar número de parámetros según el tipo de modelo
+                if tipo in ["cociente_poli", "senoidal"]:
+                    p = 3
+                elif hasattr(reg, "coef_") and reg is not None:
+                    p = reg.coef_.size + 1
+                else:
+                    p = 2
+                
+                r2_adj = 1 - (1 - r2) * (n - 1) / (n - p - 1) if n > p + 1 else r2
+                
+                # Validar que las métricas sean razonables
+                if np.isnan(r2) or np.isinf(r2) or r2 < -10:
+                    continue
+                if np.isnan(r2_adj) or np.isinf(r2_adj) or r2_adj < -10:
+                    r2_adj = r2
+                
+                resultados[nombre] = {
+                    "r (Correlación)": r_pearson,
+                    "R²": r2,
+                    "R² ajustado": r2_adj,
+                    "RMSE": rmse,
+                    "MAE": mae,
+                    "MAPE (%)": mape,
+                    "y_pred": y_pred,
+                    "f_pred": f_pred,
+                    "reg": reg
+                }
+            except Exception as e:
+                continue
+        
+        return resultados if resultados else None
 
-    # Efecto típico (mediana de β1) y potencia explicativa típica (mediana R²)
-    if {"beta1","R2"}.issubset(dfv.columns):
-        med_b1 = dfv["beta1"].dropna().median() if "beta1" in dfv else np.nan
-        med_r2 = dfv["R2"].dropna().median()
-        if pd.notna(med_b1):
-            sign = "↑" if med_b1>=0 else "↓"
-            phrases.append(f"Efecto típico (mediana β₁): {sign}{_sr(abs(med_b1),2)} unidades en {y_var} por +1 en {x_var}.")
-        if pd.notna(med_r2):
-            phrases.append(f"Potencia explicativa típica (mediana R²): {_sr(med_r2,3)}.")
+    tab1, tab2 = st.tabs(["Comparación visual", "Comparación Multi-Modelo"])
 
-# 3) Frases del modelo múltiple global
-has_multi = ('multi_metrics' in locals() and isinstance(multi_metrics, dict) and len(multi_metrics) > 0)
-has_multi_coefs = ('multi_coefs' in locals() and isinstance(multi_coefs, pd.DataFrame) and len(multi_coefs))
+    # ================================================================
+    # TAB 1: COMPARACIÓN VISUAL CON OPCIONES DE VISUALIZACIÓN
+    # ================================================================
+    with tab1:
+        # Forma funcional del modelo
+        forma_funcional = ""
+        if tipo_modelo == "poly2":
+            forma_funcional = "y = β₀ + β₁·x + β₂·x²"
+        elif tipo_modelo == "poly3":
+            forma_funcional = "y = β₀ + β₁·x + β₂·x² + β₃·x³"
+        elif tipo_modelo == "log":
+            forma_funcional = "y = β₀ + β₁·ln(x)"
+        elif tipo_modelo == "exp":
+            forma_funcional = "y = a·e^(b·x)"
+        elif tipo_modelo == "pow":
+            forma_funcional = "y = a·x^b"
+        elif tipo_modelo == "sqrt":
+            forma_funcional = "y = β₀ + β₁·√x"
+        elif tipo_modelo == "inversa":
+            forma_funcional = "y = a/x"
+        elif tipo_modelo == "cociente_poli":
+            forma_funcional = "y = (a·x² + b)/(c·x²)"
+        elif tipo_modelo == "senoidal":
+            forma_funcional = "y = a·sin(b·x) + c"
+        
+        st.markdown(f"""
+        <div style='background: linear-gradient(90deg, rgba(255,56,92,0.1) 0%, rgba(255,255,255,0) 100%); 
+                    padding: 20px; border-left: 4px solid #FF385C; border-radius: 8px; margin-bottom: 20px;'>
+            <h3 style='color: #484848; margin: 0 0 10px 0; font-weight: 700; font-size: 22px;'>
+                Modelo Seleccionado: <span style='color: #FF385C;'>{nombre_modelo}</span>
+            </h3>
+            <div style='background: white; padding: 12px 16px; border-radius: 6px; border: 1px solid #E8E8E8;'>
+                <p style='color: #767676; margin: 0 0 4px 0; font-size: 13px; font-weight: 600;'>Forma funcional</p>
+                <p style='color: #484848; margin: 0; font-size: 16px; font-family: "Courier New", monospace; font-weight: 500;'>{forma_funcional}</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-if has_multi:
-    r2a = multi_metrics.get("R2_adj", None)
-    rmse = multi_metrics.get("RMSE", None)
-    if r2a is not None:
-        phrases.append(f"El modelo múltiple global alcanza R² ajustado de {_sr(r2a,3)}.")
-    if rmse is not None:
-        phrases.append(f"El error típico (RMSE) del modelo múltiple es {_sr(rmse,2)} en unidades de {y_var}.")
+        modo_grafica_nl = st.radio(
+            "Modo de visualización",
+            ["Cuadrícula por ciudad", "Pestañas por ciudad", "Todas juntas"],
+            horizontal=True,
+            key="modo_nonlinear"
+        )
 
-if has_multi_coefs:
-    dfc = multi_coefs.copy()
-    if "variable" in dfc.columns and "beta_estandarizado" in dfc.columns:
-        dfc = dfc[dfc["variable"]!="const"].dropna(subset=["beta_estandarizado"])
-        if len(dfc):
-            dfc["absb"] = dfc["beta_estandarizado"].abs()
-            top3 = dfc.sort_values("absb", ascending=False).head(3)
-            driv = [f"{row['variable']} (β*={_sr(row['beta_estandarizado'],2)}" + (f", p={_sr(row['pvalue'],3)}" if "pvalue" in dfc.columns else "") + ")" for _, row in top3.iterrows()]
-            phrases.append("Principales impulsores del precio en el modelo múltiple: " + ", ".join(driv) + ".")
+        resultados_globales = []
 
-# 4) Render bonito
-if phrases:
-    st.markdown("""
-    <div style="background:#fff;border:2px solid #FF385C;border-radius:16px;padding:14px 16px;box-shadow:0 2px 8px rgba(255,56,92,.15);">
-      <h4 style="margin:0 0 8px 0;color:#FF385C;">Hallazgos</h4>
-      <ul style="margin:0 0 0 18px;">
-    """, unsafe_allow_html=True)
-    for p in phrases:
-        st.markdown(f"<li>{p}</li>", unsafe_allow_html=True)
-    st.markdown("</ul></div>", unsafe_allow_html=True)
-else:
-    st.info("Aún no hay hallazgos para mostrar. Verifica que existan tablas de resultados o datos suficientes.")
+        if modo_grafica_nl == "Todas juntas":
+            # Modo: todas las ciudades en una sola gráfica
+            st.markdown("""
+            <div style='background: #F7F7F7; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px;'>
+                <p style='color: #484848; margin: 0; font-weight: 600; font-size: 16px;'>Vista Consolidada — Todas las Ciudades</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            fig_all = go.Figure()
+            
+            for ciudad in selected_cities:
+                df_c = df_combined[df_combined["ciudad"] == ciudad][[x_var, y_var]].dropna()
+                if df_c.empty:
+                    continue
+                
+                x = df_c[x_var].values.astype(float)
+                y = df_c[y_var].values.astype(float)
+                n = len(y)
+                
+                # Agregar scatter de datos
+                fig_all.add_trace(go.Scatter(
+                    x=x, y=y,
+                    mode="markers",
+                    name=ciudad,
+                    opacity=0.6
+                ))
+                
+                # Calcular curva del modelo
+                try:
+                    x_grid = np.linspace(x.min(), x.max(), 100)
+                    
+                    if tipo_modelo == "poly2":
+                        reg, f_pred = modelo_polinomial(x, y, grado=2)
+                        y_pred = f_pred(x)
+                        x_plot = x_grid
+                        y_grid = f_pred(x_plot)
+                    elif tipo_modelo == "poly3":
+                        reg, f_pred = modelo_polinomial(x, y, grado=3)
+                        y_pred = f_pred(x)
+                        x_plot = x_grid
+                        y_grid = f_pred(x_plot)
+                    elif tipo_modelo == "log":
+                        reg, f_pred, mask = modelo_logaritmico(x, y)
+                        y_pred = np.full_like(y, np.nan, dtype=float)
+                        y_pred[mask] = f_pred(x[mask])
+                        x_plot = x_grid[x_grid > 0]
+                        y_grid = f_pred(x_plot)
+                    elif tipo_modelo == "exp":
+                        reg, f_pred, mask = modelo_exponencial(x, y)
+                        y_pred = np.full_like(y, np.nan, dtype=float)
+                        y_pred[mask] = f_pred(x[mask])
+                        x_plot = x_grid
+                        y_grid = f_pred(x_plot)
+                    elif tipo_modelo == "pow":
+                        reg, f_pred, mask = modelo_potencia(x, y)
+                        y_pred = np.full_like(y, np.nan, dtype=float)
+                        y_pred[mask] = f_pred(x[mask])
+                        x_plot = x_grid[x_grid > 0]
+                        y_grid = f_pred(x_plot)
+                    elif tipo_modelo == "sqrt":
+                        reg, f_pred, mask = modelo_raiz(x, y)
+                        y_pred = np.full_like(y, np.nan, dtype=float)
+                        y_pred[mask] = f_pred(x[mask])
+                        x_plot = x_grid[x_grid >= 0]
+                        y_grid = f_pred(x_plot)
+                    
+                    # Calcular métricas
+                    mask_valid = ~np.isnan(y_pred)
+                    if mask_valid.sum() >= 3:
+                        r2 = r2_score(y[mask_valid], y_pred[mask_valid])
+                    else:
+                        r2 = 0.0
+                    
+                    # Agregar línea de la curva con R²
+                    fig_all.add_trace(go.Scatter(
+                        x=x_plot, y=y_grid,
+                        mode="lines",
+                        name=f"{ciudad} (R²={r2:.3f})",
+                        line=dict(width=3)
+                    ))
+                    
+                    # Continuar calculando otras métricas
+                    if mask_valid.sum() >= 3:
+                        rmse = float(np.sqrt(mean_squared_error(y[mask_valid], y_pred[mask_valid])))
+                        mae = float(mean_absolute_error(y[mask_valid], y_pred[mask_valid]))
+                        
+                        # Correlación de Pearson (r)
+                        r_pearson = np.corrcoef(y[mask_valid], y_pred[mask_valid])[0, 1]
+                        r_pearson = float(r_pearson) if not np.isnan(r_pearson) else 0.0
+                        
+                        # MAPE
+                        mape = np.mean(np.abs((y[mask_valid] - y_pred[mask_valid]) / y[mask_valid])) * 100
+                        mape = float(mape) if not np.isnan(mape) and not np.isinf(mape) else 0.0
+                        
+                        # Determinar número de parámetros
+                        p = reg.coef_.size + 1 if hasattr(reg, "coef_") else 2
+                        
+                        r2_adj = 1 - (1 - r2) * (n - 1) / (n - p - 1) if n > p + 1 else np.nan
+                        
+                        resultados_globales.append({
+                            "ciudad": ciudad,
+                            "Modelo": nombre_modelo,
+                            "r (Correlación)": r_pearson,
+                            "R²": r2,
+                            "R² ajustado": r2_adj,
+                            "RMSE": rmse,
+                            "MAE": mae,
+                            "MAPE (%)": mape
+                        })
+                except Exception as e:
+                    st.warning(f"Error ajustando {ciudad}: {e}")
+                    continue
+            
+            fig_all.update_layout(
+                title=f"{y_var} vs {x_var} - {nombre_modelo}",
+                xaxis_title=x_var,
+                yaxis_title=y_var,
+                height=600
+            )
+            st.plotly_chart(fig_all, use_container_width=True)
+
+        elif modo_grafica_nl == "Pestañas por ciudad":
+            # Modo: pestañas por ciudad
+            tabs = st.tabs(selected_cities)
+            for tab, ciudad in zip(tabs, selected_cities):
+                with tab:
+                    df_c = df_combined[df_combined["ciudad"] == ciudad][[x_var, y_var]].dropna()
+                    resultado = _plot_nonlinear_ciudad(df_c, ciudad, x_var, y_var, tipo_modelo, nombre_modelo, mostrar_metricas=False)
+                    if resultado:
+                        resultados_globales.append(resultado)
+
+        else:  # "Cuadrícula por ciudad"
+            # Modo: cuadrícula
+            n_cols = st.slider("Columnas de la cuadrícula", 2, 4, min(3, max(2, len(selected_cities))), key="cols_nl")
+            cols = st.columns(n_cols)
+            
+            for i, ciudad in enumerate(selected_cities):
+                with cols[i % n_cols]:
+                    st.markdown(f"**{ciudad}**")
+                    df_c = df_combined[df_combined["ciudad"] == ciudad][[x_var, y_var]].dropna()
+                    resultado = _plot_nonlinear_ciudad(df_c, ciudad, x_var, y_var, tipo_modelo, nombre_modelo, mostrar_metricas=False)
+                    if resultado:
+                        resultados_globales.append(resultado)
+
+        # Guardamos resultados en sesión para Tab 2
+        st.session_state["nl_results_single_model"] = resultados_globales
+
+        # ================================================================
+        # TARJETAS DE MÉTRICAS POR CIUDAD
+        # ================================================================
+        if resultados_globales:
+            for resultado in resultados_globales:
+                ciudad = resultado["ciudad"]
+                r_pearson = resultado["r (Correlación)"]
+                r2 = resultado["R²"]
+                r2_adj = resultado["R² ajustado"]
+                rmse = resultado["RMSE"]
+                mae = resultado["MAE"]
+                mape = resultado["MAPE (%)"]
+                
+                # Calcular ecuación con variables reales
+                if tipo_modelo == "poly2":
+                    ecuacion = f"{y_var} = a·{x_var}² + b·{x_var} + c"
+                elif tipo_modelo == "poly3":
+                    ecuacion = f"{y_var} = a·{x_var}³ + b·{x_var}² + c·{x_var} + d"
+                elif tipo_modelo == "log":
+                    ecuacion = f"{y_var} = a·ln({x_var}) + b"
+                elif tipo_modelo == "exp":
+                    ecuacion = f"{y_var} = a·exp(b·{x_var})"
+                elif tipo_modelo == "pow":
+                    ecuacion = f"{y_var} = a·{x_var}^b"
+                elif tipo_modelo == "sqrt":
+                    ecuacion = f"{y_var} = a·√{x_var} + b"
+                elif tipo_modelo == "inversa":
+                    ecuacion = f"{y_var} = a·(1/{x_var})"
+                elif tipo_modelo == "cociente_poli":
+                    ecuacion = f"{y_var} = (a·{x_var}² + b)/(c·{x_var}²)"
+                elif tipo_modelo == "senoidal":
+                    ecuacion = f"{y_var} = a·sin(b·{x_var}) + c"
+                else:
+                    ecuacion = "Ecuación no disponible"
+                
+                st.markdown(f"""
+                <div style="background:#F7F7F7;border:1px solid rgba(0,0,0,.08);border-radius:16px;
+                            padding:14px 16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.05);">
+                    <h4 style="margin:0 0 8px 0;font-weight:800;color:#FF385C;text-align:center;">Métricas del Modelo - {ciudad}</h4>
+                    <div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center;">
+                        <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                    padding:10px 12px;min-width:160px;">
+                            <div style="font-size:12px;color:#666;text-align:center;">r (Correlación)</div>
+                            <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{r_pearson:.3f}</div>
+                        </div>
+                        <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                    padding:10px 12px;min-width:160px;">
+                            <div style="font-size:12px;color:#666;text-align:center;">R²</div>
+                            <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{r2:.3f}</div>
+                        </div>
+                        <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                    padding:10px 12px;min-width:160px;">
+                            <div style="font-size:12px;color:#666;text-align:center;">R² Ajustado</div>
+                            <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{r2_adj:.3f}</div>
+                        </div>
+                        <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                    padding:10px 12px;min-width:160px;">
+                            <div style="font-size:12px;color:#666;text-align:center;">RMSE</div>
+                            <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{rmse:.2f}</div>
+                        </div>
+                        <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                    padding:10px 12px;min-width:160px;">
+                            <div style="font-size:12px;color:#666;text-align:center;">MAE</div>
+                            <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{mae:.2f}</div>
+                        </div>
+                        <div style="background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:12px;
+                                    padding:10px 12px;min-width:160px;">
+                            <div style="font-size:12px;color:#666;text-align:center;">MAPE</div>
+                            <div style="font-size:20px;font-weight:700;color:#666;text-align:center;">{mape:.2f}%</div>
+                        </div>
+                    </div>
+                    <div style="margin-top:12px;padding:10px;background:#fff;border:1px solid rgba(0,0,0,.06);
+                                border-radius:12px;font-size:16px;font-weight:600;text-align:center;color:#484848;">
+                        {ecuacion}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+
+        # ================================================================
+        # COMPARATIVA DE AJUSTE ENTRE CIUDADES
+        # ================================================================
+        if resultados_globales:
+            st.markdown("---")
+            st.markdown("""
+            <div style='padding: 15px 0 15px 0;'>
+                <h3 style='color: #484848; margin: 0 0 5px 0; font-weight: 700; font-size: 22px;'>Comparativa de Desempeño</h3>
+                <p style='color: #767676; margin: 0; font-size: 14px;'>Métricas del modelo {nombre_modelo} en cada ciudad</p>
+            </div>
+            """.format(nombre_modelo=nombre_modelo), unsafe_allow_html=True)
+            df_comp = pd.DataFrame(resultados_globales)
+            
+            # Renombrar columna "ciudad" a "Ciudad" con mayúscula
+            if 'ciudad' in df_comp.columns:
+                df_comp = df_comp.rename(columns={'ciudad': 'Ciudad'})
+            
+            # CSS personalizado para encabezados de tabla
+            st.markdown("""
+                <style>
+                /* Encabezados de tabla */
+                [data-testid="stDataFrame"] thead tr th,
+                [data-testid="stDataFrame"] thead th,
+                div[data-testid="stDataFrame"] table thead tr th {
+                    background-color: #FFE5E9 !important;
+                    color: #FF385C !important;
+                    text-align: center !important;
+                    font-weight: 700 !important;
+                    font-size: 14px !important;
+                    padding: 12px 8px !important;
+                }
+                /* Celdas de datos */
+                [data-testid="stDataFrame"] tbody tr td,
+                [data-testid="stDataFrame"] tbody td,
+                div[data-testid="stDataFrame"] table tbody tr td {
+                    text-align: center !important;
+                    padding: 10px 8px !important;
+                }
+                /* Centrar contenido en todas las celdas */
+                div[data-testid="stDataFrame"] table td div,
+                div[data-testid="stDataFrame"] table th div {
+                    text-align: center !important;
+                    justify-content: center !important;
+                }
+                </style>
+            """, unsafe_allow_html=True)
+            
+            st.dataframe(df_comp.round(4), use_container_width=True, hide_index=True)
+
+        # ================================================================
+        # HALLAZGOS IMPORTANTES DE REGRESIÓN NO LINEAL
+        # ================================================================
+        if resultados_globales:
+            with st.expander("Insights y Hallazgos Clave", expanded=False):
+                df_comp = pd.DataFrame(resultados_globales)
+                hallazgos = []
+                
+                # Análisis del modelo seleccionado
+                if tipo_modelo == "poly2":
+                    hallazgos.append(f"**Modelo Cuadrático (Polinomial grado 2)**: Captura relaciones donde {y_var} acelera o desacelera con respecto a {x_var}. Útil para identificar puntos de inflexión en el mercado de Airbnb.")
+                elif tipo_modelo == "poly3":
+                    hallazgos.append(f"**Modelo Cúbico (Polinomial grado 3)**: Captura relaciones complejas con múltiples cambios de tendencia. Ideal cuando la relación entre {y_var} y {x_var} tiene comportamientos cambiantes.")
+                elif tipo_modelo == "log":
+                    hallazgos.append(f"**Modelo Logarítmico**: Captura rendimientos decrecientes - {y_var} aumenta rápidamente al principio y luego se estabiliza conforme aumenta {x_var}. Común en economía de escala.")
+                elif tipo_modelo == "exp":
+                    hallazgos.append(f"**Modelo Exponencial**: Captura crecimiento acelerado - {y_var} crece exponencialmente con {x_var}. Refleja efectos de demanda premium o características de lujo.")
+                elif tipo_modelo == "pow":
+                    hallazgos.append(f"**Modelo Potencial**: Captura elasticidad constante entre {y_var} y {x_var}. Útil para entender la sensibilidad proporcional de precios.")
+                elif tipo_modelo == "sqrt":
+                    hallazgos.append(f"**Modelo Raíz Cuadrada**: Similar al logarítmico pero con rendimientos decrecientes más suaves. {y_var} crece con {x_var} pero a tasa cada vez menor.")
+                elif tipo_modelo == "inversa":
+                    hallazgos.append(f"**Modelo Inversa**: Captura relación inversamente proporcional - {y_var} disminuye a medida que aumenta {x_var}. Útil para modelar efectos de saturación o dilución.")
+                elif tipo_modelo == "cociente_poli":
+                    hallazgos.append(f"**Modelo Cociente de Polinomios**: Captura relaciones complejas racionales con asíntotas. {y_var} se estabiliza en un valor límite a medida que {x_var} aumenta.")
+                elif tipo_modelo == "senoidal":
+                    hallazgos.append(f"**Modelo Senoidal**: Captura patrones cíclicos o periódicos en la relación entre {y_var} y {x_var}. Útil para identificar fluctuaciones estacionales o patrones repetitivos.")
+
+                # Análisis comparativo de correlación y R²
+                df_sorted = df_comp.sort_values("R²", ascending=False)
+                mejor_ciudad = df_sorted.iloc[0]["ciudad"]
+                mejor_r2 = df_sorted.iloc[0]["R²"]
+                mejor_r = df_sorted.iloc[0]["r (Correlación)"]
+                peor_ciudad = df_sorted.iloc[-1]["ciudad"]
+                peor_r2 = df_sorted.iloc[-1]["R²"]
+                peor_r = df_sorted.iloc[-1]["r (Correlación)"]
+                
+                # Análisis de correlación promedio
+                r_promedio = df_comp["r (Correlación)"].mean()
+                hallazgos.append(f"**Correlación promedio**: r = {r_promedio:.3f} - {'Positiva fuerte' if r_promedio > 0.7 else 'Positiva moderada' if r_promedio > 0.4 else 'Positiva débil' if r_promedio > 0 else 'Negativa'} entre {x_var} y {y_var} predicho.")
+                
+                hallazgos.append(f"**Mejor ajuste**: {mejor_ciudad} (r = {mejor_r:.3f}, R² = {mejor_r2:.3f}) - El modelo {nombre_modelo} explica {mejor_r2*100:.1f}% de la variabilidad en {y_var}.")
+                
+                if mejor_r2 >= 0.7:
+                    hallazgos.append(f"En {mejor_ciudad}, existe una relación fuerte y predecible entre {x_var} y {y_var}, lo que sugiere que esta variable es un buen predictor de precios.")
+                elif mejor_r2 >= 0.4:
+                    hallazgos.append(f"En {mejor_ciudad}, existe una relación moderada entre {x_var} y {y_var}. Otros factores también influyen significativamente en los precios.")
+                else:
+                    hallazgos.append(f"En {mejor_ciudad}, la relación entre {x_var} y {y_var} es débil. Se recomienda explorar otros modelos o variables adicionales.")
+                
+                hallazgos.append(f"**Menor ajuste**: {peor_ciudad} (r = {peor_r:.3f}, R² = {peor_r2:.3f}) - El modelo explica solo {peor_r2*100:.1f}% de la variabilidad.")
+                
+                if peor_r2 < 0.3:
+                    hallazgos.append(f"En {peor_ciudad}, {x_var} tiene poca capacidad predictiva sobre {y_var} con este modelo. Puede indicar que el mercado de Airbnb en esta ciudad responde a otros factores.")
+
+                # Análisis de R² Ajustado
+                df_r2_adj = df_comp.dropna(subset=["R² ajustado"])
+                if not df_r2_adj.empty:
+                    r2_adj_promedio = df_r2_adj["R² ajustado"].mean()
+                    hallazgos.append(f"**R² Ajustado promedio**: {r2_adj_promedio:.3f} - Penaliza la complejidad del modelo para evitar sobreajuste.")
+                    
+                    if tipo_modelo in ["poly3"] and r2_adj_promedio < 0.4:
+                        hallazgos.append(f"El modelo cúbico puede estar sobreajustando los datos. Considera usar un modelo más simple como polinomial grado 2.")
+
+                # Análisis de RMSE
+                rmse_promedio = df_comp["RMSE"].mean()
+                rmse_min = df_comp["RMSE"].min()
+                rmse_max = df_comp["RMSE"].max()
+                ciudad_min_error = df_comp.loc[df_comp["RMSE"].idxmin(), "ciudad"]
+                ciudad_max_error = df_comp.loc[df_comp["RMSE"].idxmax(), "ciudad"]
+                
+                hallazgos.append(f"**Error promedio (RMSE)**: {rmse_promedio:.2f} unidades de {y_var}")
+                hallazgos.append(f"**Mejor precisión**: {ciudad_min_error} (RMSE = {rmse_min:.2f}) - Predicciones más cercanas a los valores reales.")
+                hallazgos.append(f"**Menor precisión**: {ciudad_max_error} (RMSE = {rmse_max:.2f}) - Mayor variabilidad en las predicciones.")
+                
+                # Análisis de MAPE
+                if "MAPE (%)" in df_comp.columns:
+                    mape_promedio = df_comp["MAPE (%)"].mean()
+                    mape_min = df_comp["MAPE (%)"].min()
+                    mape_max = df_comp["MAPE (%)"].max()
+                    ciudad_min_mape = df_comp.loc[df_comp["MAPE (%)"].idxmin(), "ciudad"]
+                    ciudad_max_mape = df_comp.loc[df_comp["MAPE (%)"].idxmax(), "ciudad"]
+                    
+                    hallazgos.append(f"**Error porcentual promedio (MAPE)**: {mape_promedio:.2f}% - El modelo se equivoca en promedio un {mape_promedio:.2f}% del precio real.")
+                    
+                    if mape_promedio < 10:
+                        hallazgos.append(f"Excelente precisión porcentual - el modelo predice con menos de 10% de error en promedio.")
+                    elif mape_promedio < 20:
+                        hallazgos.append(f"Buena precisión porcentual - errores típicamente menores al 20%.")
+                    elif mape_promedio < 30:
+                        hallazgos.append(f"Precisión moderada - los errores son considerables y pueden afectar decisiones de pricing.")
+                    else:
+                        hallazgos.append(f"Precisión baja - errores significativos. Considera explorar otros modelos o variables adicionales.")
+                    
+                    hallazgos.append(f"**Rango de error porcentual**: Desde {mape_min:.2f}% en {ciudad_min_mape} hasta {mape_max:.2f}% en {ciudad_max_mape}")
+
+                # Análisis de variabilidad entre ciudades
+                r2_std = df_comp["R²"].std()
+                if r2_std < 0.1:
+                    hallazgos.append(f"**Consistencia alta**: El modelo {nombre_modelo} tiene un desempeño similar en todas las ciudades (variación en R² = {r2_std:.3f}).")
+                elif r2_std < 0.2:
+                    hallazgos.append(f"**Consistencia moderada**: El modelo tiene variaciones moderadas entre ciudades (variación en R² = {r2_std:.3f}).")
+                else:
+                    hallazgos.append(f"**Consistencia baja**: El modelo funciona muy diferente en cada ciudad (variación en R² = {r2_std:.3f}). Cada mercado tiene características únicas.")
+
+                # Recomendaciones según el modelo
+                if tipo_modelo == "poly2":
+                    if mejor_r2 > 0.6:
+                        hallazgos.append(f"**Recomendación**: La relación cuadrática sugiere que existe un punto óptimo para {x_var} donde {y_var} alcanza un máximo o mínimo. Analiza si hay un rango ideal de {x_var} para maximizar ingresos.")
+                elif tipo_modelo == "log":
+                    hallazgos.append(f"**Recomendación**: El modelo logarítmico indica rendimientos decrecientes. Aumentar {x_var} en propiedades de bajo nivel tiene más impacto que en propiedades de nivel alto.")
+                elif tipo_modelo == "exp":
+                    hallazgos.append(f"**Recomendación**: El crecimiento exponencial sugiere un mercado premium. Propiedades con mayor {x_var} pueden justificar precios desproporcionadamente más altos.")
+                elif tipo_modelo == "pow":
+                    hallazgos.append(f"**Recomendación**: El modelo potencial revela elasticidad. Un cambio porcentual en {x_var} resulta en un cambio porcentual constante en {y_var}.")
+
+                # Interpretación contextual
+                hallazgos.append("")
+                hallazgos.append("**Interpretación contextual**:")
+                if x_var == "accommodates":
+                    hallazgos.append("La capacidad de huéspedes muestra una relación no lineal con el precio, sugiriendo que propiedades más grandes no escalan linealmente en precio.")
+                elif x_var == "amenities_count":
+                    hallazgos.append("La cantidad de amenidades tiene rendimientos decrecientes: las primeras amenidades aportan más valor que las adicionales.")
+                elif x_var == "number_of_reviews":
+                    hallazgos.append("El número de reseñas afecta el precio de manera no lineal, posiblemente por efectos de reputación y confianza.")
+                
+                # Mostrar todos los hallazgos
+                for hallazgo in hallazgos:
+                    if hallazgo:
+                        st.markdown(hallazgo)
+
+    # ================================================================
+
+
+    # ================================================================
+    # TAB 2: COMPARACIÓN MULTI-MODELO
+    # ================================================================
+    with tab2:
+        st.markdown("""
+        <div style='padding: 15px 0 20px 0; border-bottom: 2px solid #F7F7F7;'>
+            <h2 style='color: #484848; margin: 0; font-weight: 800; font-size: 26px;'>Comparación Multi-Modelo</h2>
+            <p style='color: #767676; margin: 8px 0 0 0; font-size: 15px;'>Evalúa y compara 9 modelos no lineales simultáneamente para cada mercado</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # ================================================================
+        # COMPARACIÓN VISUAL CON TODAS LAS CURVAS
+        # ================================================================
+        st.markdown("""
+        <div style='padding: 10px 0 10px 0;'>
+            <h3 style='color: #484848; margin: 0 0 5px 0; font-weight: 700; font-size: 20px;'>Visualización Comparativa</h3>
+            <p style='color: #767676; margin: 0; font-size: 14px;'>Análisis de {y_var} en función de {x_var}</p>
+        </div>
+        """.format(y_var=y_var, x_var=x_var), unsafe_allow_html=True)
+        
+        # Selector de ciudad
+        ciudad_analisis = st.selectbox(
+            "Selecciona la ciudad para analizar",
+            selected_cities,
+            key="ciudad_multi"
+        )
+        
+        df_ciudad = df_combined[df_combined["ciudad"] == ciudad_analisis]
+        resultados_ciudad = ajustar_todos_modelos_tab3(df_ciudad, x_var, y_var)
+        
+        if resultados_ciudad:
+            # Crear gráfico con las 6 curvas superpuestas
+            df_plot = df_ciudad[[x_var, y_var]].dropna()
+            x_data = df_plot[x_var].values.astype(float)
+            y_data = df_plot[y_var].values.astype(float)
+            
+            x_grid = np.linspace(x_data.min(), x_data.max(), 300)
+            
+            fig = go.Figure()
+            
+            # Agregar puntos reales
+            fig.add_trace(go.Scatter(
+                x=x_data, y=y_data,
+                mode="markers",
+                name="Datos reales",
+                marker=dict(size=6, color='lightgray', opacity=0.6)
+            ))
+            
+            # Colores para cada modelo (9 colores para 9 modelos)
+            colores = ["#FF385C", "#00A699", "#FC642D", "#767676", "#484848", "#008489", "#E91E63", "#9C27B0", "#3F51B5"]
+            
+            # Agregar curva de cada modelo
+            for i, (nombre, metricas) in enumerate(resultados_ciudad.items()):
+                try:
+                    f_pred = metricas["f_pred"]
+                    # Para algunos modelos, filtrar x_grid apropiadamente
+                    if "Inversa" in nombre or "Cociente" in nombre:
+                        x_plot = x_grid[x_grid != 0]
+                    else:
+                        x_plot = x_grid
+                    
+                    y_grid = f_pred(x_plot)
+                    
+                    fig.add_trace(go.Scatter(
+                        x=x_plot, y=y_grid,
+                        mode="lines",
+                        name=f"{nombre} (R²={metricas['R²']:.3f})",
+                        line=dict(width=3, color=colores[i % len(colores)])
+                    ))
+                except Exception as e:
+                    continue
+            
+            fig.update_layout(
+                title=f"Comparación de Modelos - {ciudad_analisis}",
+                xaxis_title=x_var,
+                yaxis_title=y_var,
+                height=600,
+                hovermode="x unified",
+                legend=dict(
+                    orientation="v",
+                    yanchor="top",
+                    y=0.99,
+                    xanchor="right",
+                    x=0.99,
+                    bgcolor="rgba(255,255,255,0.8)"
+            )
+        )
+        
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Tabla de ranking
+            st.markdown("""
+            <div style='padding: 15px 0 8px 0; margin-top: 20px;'>
+                <h3 style='color: #484848; margin: 0 0 5px 0; font-weight: 700; font-size: 20px;'>Ranking de Desempeño</h3>
+                <p style='color: #767676; margin: 0; font-size: 14px;'>Modelos ordenados por calidad de ajuste para <strong>{ciudad_analisis}</strong></p>
+            </div>
+            """.format(ciudad_analisis=ciudad_analisis), unsafe_allow_html=True)
+            
+            df_ranking = pd.DataFrame([
+                {
+                    "Posición": idx + 1,
+                    "Modelo": nombre,
+                    "r (Correlación)": metricas["r (Correlación)"],
+                    "R²": metricas["R²"],
+                    "R² ajustado": metricas["R² ajustado"],
+                    "RMSE": metricas["RMSE"],
+                    "MAE": metricas["MAE"],
+                    "MAPE (%)": metricas["MAPE (%)"]
+                }
+                for idx, (nombre, metricas) in enumerate(
+                    sorted(resultados_ciudad.items(), key=lambda x: x[1]["R²"], reverse=True)
+                )
+            ])
+            
+            st.dataframe(df_ranking.round(4), use_container_width=True, hide_index=True)
+            
+            # Análisis automático
+            mejor_modelo = df_ranking.iloc[0]["Modelo"]
+            mejor_r2 = df_ranking.iloc[0]["R²"]
+            peor_modelo = df_ranking.iloc[-1]["Modelo"]
+            peor_r2 = df_ranking.iloc[-1]["R²"]
+            diferencia = mejor_r2 - peor_r2
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("""
+            <div style='padding: 10px 0 5px 0;'>
+                <h4 style='color: #484848; margin: 0; font-weight: 700; font-size: 18px;'>Recomendación Automática</h4>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.info(f"""
+            **Mejor modelo**: {mejor_modelo} con R² = {mejor_r2:.3f}
+            
+            **Peor modelo**: {peor_modelo} con R² = {peor_r2:.3f}
+            
+            **Diferencia de ajuste**: {diferencia:.3f} ({diferencia*100:.1f}% de mejora)
+            
+            **Recomendación**: {"El mejor modelo supera significativamente a los demás. Usar este modelo para predicciones." if diferencia > 0.15 else "Los modelos tienen desempeño similar. Priorizar simplicidad o interpretabilidad."}
+            """)
+        else:
+            st.warning(f"No hay suficientes datos para ajustar modelos en {ciudad_analisis}")
+
+# ====== VISTA: REGRESIÓN LOGÍSTICA ======
+if View == "Regresión Logística":
+    st.title("Airbnb – Regresión Logística")
+    st.info("Esta sección está en desarrollo.")
